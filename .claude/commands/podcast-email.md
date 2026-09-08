@@ -235,26 +235,44 @@ git push
 
 ---
 
-## Step 9 — Push the draft to Mailchimp
+## Step 9 — Create the Outlook draft (automated)
 
-Create the reusable per-episode **template** and a send-ready **campaign draft** from the finished HTML. This runs only **after** Step 8's push, because the newsletter references images via `raw.githubusercontent.com` URLs — if those aren't on `main` yet, the Mailchimp preview shows broken images (same push-first rule as the website).
+**Mailchimp is not used for sending anymore.** `mckinsey.com` publishes a `p=reject` DMARC policy and is not authenticated as a sending domain in Mailchimp — any mail claiming `From: ...@mckinsey.com` sent through Mailchimp's servers is rejected by every DMARC-enforcing mail provider (Gmail, Cogeco, McKinsey's own tenant included). This was confirmed 2026-08-23: the real "AI podcast" audience had 0 opens on record since the pipeline started, and test sends to three different providers all silently failed. Sending through Outlook directly avoids this — the mail originates from McKinsey's own authorized mail servers.
 
-> Ideally replace `#EPISODE_URL` (the Listen button) with the real Drive link before this step so the draft's Listen button works. If it's not ready, you can still create the draft and fix the link in Mailchimp's editor before sending.
+This step runs only **after** Step 8's push, because the newsletter references images via `raw.githubusercontent.com` URLs — if those aren't on `main` yet, the draft will show broken images.
+
+**Inline the images first (required as of 2026-09-07).** Corporate Defender DLP now blocks `raw.githubusercontent.com`/`githubusercontent.com` at the network/TLS layer on this machine — confirmed via failed TLS handshakes while sibling subdomains (`objects.githubusercontent.com`, `camo.githubusercontent.com`) and `github.com` still work fine, so this is a targeted policy block, not an outage. It is a legitimate corporate control — don't attempt to bypass it at the network level. Instead, run `scripts/inline_images_for_outlook.py` to produce a temp copy of the newsletter HTML with every `raw.githubusercontent.com/.../assets/...` image replaced by an embedded base64 `data:` URI, sourced from the local `assets/` folder. This only affects the Outlook draft — the canonical newsletter HTML pushed to GitHub in Step 8 is untouched and keeps using `raw.githubusercontent.com` for the website generator and any other consumer.
 
 ```bash
-# Draft only (safe — nothing is sent to the 5-member audience):
-python3 scripts/mailchimp_draft.py --episode ${EPISODE}
-
-# Draft + a test email to yourself, to see it land:
-python3 scripts/mailchimp_draft.py --episode ${EPISODE} --test-email ruth_tupe@mckinsey.com
+INLINED=$(python3 scripts/inline_images_for_outlook.py "newsletters/ai-podcast-episode-${EPISODE}-${DATE}.html")
 ```
 
-What it does (stdlib only, reads `MAILCHIMP_API_KEY` + `MAILCHIMP_AUDIENCE_ID` from `.env`):
-- Creates/refreshes a template named by date (e.g. `June 02 2026`) — matches Ruth's existing template set
-- Creates a campaign draft `AI Podcast Episode ${EPISODE}` (subject = hero image alt text; from "Ruth Tupe" / reply-to `ruth_tupe@mckinsey.com`) referencing that template
-- Leaves it at status `save` and prints the Mailchimp edit URL
+The script prints the path of the generated temp file (and warns on stderr if any local asset file is missing — check that before proceeding).
 
-**It never sends to the audience.** The only outbound path is `--test-email` (to addresses you name). Ruth reviews the draft and clicks **Send** in the UI. Re-running the same episode refreshes the template and reuses the draft (no duplicates).
+Classic Mac Outlook (bundle id `com.microsoft.Outlook`) can be scripted directly — no browser copy-paste needed. `scripts/create_outlook_draft.applescript` reads HTML from a file path and creates a real Outlook draft with it as the HTML body, addressed to yourself for review. **It only ever opens a draft — it never sends.** Point it at `$INLINED`, not the original newsletter HTML:
+
+```bash
+osascript scripts/create_outlook_draft.applescript \
+  "$INLINED" \
+  "${EPISODE}" \
+  "<the EPISODE_THEME text, e.g. AI boom or AI bubble — the week's evidence for both>" \
+  "ruth_tupe@mckinsey.com"
+```
+
+The subject line is built automatically as:
+
+```
+🎧 AI Podcast Episode ${EPISODE} - <EPISODE_THEME text>
+```
+
+This is the standing nomenclature (confirmed 2026-08-23) — always use this exact format, don't paraphrase or drop the emoji/dash.
+
+After running it:
+1. **Tell the user the draft is open in Outlook** and ask them to visually confirm it (images loaded, Listen button link works, layout intact).
+2. **They send the test to themselves** (already addressed to `ruth_tupe@mckinsey.com`) — sending is always a manual, human action.
+3. **Once the test looks right**, they create/send a second one to the "AI podcast" Outlook distribution/contact group (the same group used for prior episodes — not the old Mailchimp audience list, which is no longer the source of truth for recipients). Re-run the script with that group's address if you want a second draft prepped for them.
+
+If classic Outlook is ever migrated to "New Outlook," this AppleScript surface may disappear — fall back to the manual method: render the HTML in a browser (`open` the file), `Cmd+A`, `Cmd+C`, paste into a new Outlook draft, then continue from step 1 above.
 
 ---
 
@@ -265,8 +283,7 @@ Tell the user:
 - Images committed to `assets/`
 - Raw newsletter URL (once pushed):
   `https://raw.githubusercontent.com/ruthships/ai-podcast/main/newsletters/ai-podcast-episode-${EPISODE}-${DATE}.html`
-- Mailchimp campaign draft created (status `save`) — review and Send in the UI
-- **Manual step**: upload the canonical mp3 to Google Drive, get the share link, replace `#EPISODE_URL` in the newsletter HTML, re-push (and re-run Step 9 to refresh the draft)
+- **Manual step**: upload the canonical mp3 to Google Drive, get the share link, replace `#EPISODE_URL` in the newsletter HTML, re-push, then re-open/re-copy/re-paste for Outlook (Step 9) so the Listen link is live before sending
 - **Next pipeline step**: run `/podcast-website` (from the website repo) to update the Deployer site
 
 ---
